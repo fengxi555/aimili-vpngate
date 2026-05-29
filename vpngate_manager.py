@@ -231,6 +231,9 @@ def parse_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
 
+def is_residential_node(node: dict[str, Any]) -> bool:
+    return str(node.get("ip_type") or "").lower() == "residential"
+
 def fetch_api_text() -> str:
     request = urllib.request.Request(
         API_URL,
@@ -663,9 +666,10 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         nodes = read_json(NODES_FILE, [])
         node = next((item for item in nodes if item.get("id") == node_id), None)
         if node:
+            residential = ok and is_residential_node(temp_node)
             node["latency_ms"] = latency
-            node["probe_status"] = "available" if ok else "unavailable"
-            node["probe_message"] = message
+            node["probe_status"] = "available" if residential else "unavailable"
+            node["probe_message"] = message if residential or not ok else f"{message}; 非住宅 IP，已排除"
             node["probed_at"] = time.time()
             if ok:
                 node["owner"] = temp_node["owner"]
@@ -687,8 +691,7 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         nodes = read_json(NODES_FILE, [])
         to_test = [n for n in nodes if n.get("id") in node_ids]
         
-    def test_worker(args: tuple[int, dict[str, Any]]) -> dict[str, Any]:
-        idx, n_info = args
+    def test_worker(n_info: dict[str, Any]) -> dict[str, Any]:
         node_id = n_info["id"]
         config_file = n_info["config_file"]
         config_text = n_info.get("config_text") or ""
@@ -704,8 +707,11 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             pass
             
         latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
-        dev_name = f"tun{idx + 1}"
-        ok, message, _ = run_openvpn_until_ready(config_file, keep_alive=False, route_nopull=True, timeout=12, dev=dev_name)
+        idx = get_free_test_index()
+        try:
+            ok, message, _ = run_openvpn_until_ready(config_file, keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
+        finally:
+            release_test_index(idx)
         
         try:
             if temp_path.exists():
@@ -716,7 +722,6 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         temp_node = {
             "id": node_id,
             "latency_ms": latency,
-            "probe_status": "available" if ok else "unavailable",
             "probe_message": message,
             "probed_at": time.time(),
             "owner": "",
@@ -739,11 +744,16 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             }
             vpn_utils.enrich_ip_info([ip_to_enrich])
             temp_node.update(ip_to_enrich)
+        residential = ok and is_residential_node(temp_node)
+        temp_node["probe_status"] = "available" if residential else "unavailable"
+        if ok and not residential:
+            temp_node["probe_message"] = f"{message}; 非住宅 IP，已排除"
         return temp_node
 
     updated_nodes_map = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(to_test))) as executor:
-        futures = {executor.submit(test_worker, (idx, n)): n["id"] for idx, n in enumerate(to_test)}
+    max_workers = min(max(1, len(to_test)), int(os.environ.get("OPENVPN_TEST_WORKERS", "12")))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(test_worker, n): n["id"] for n in to_test}
         for future in concurrent.futures.as_completed(futures):
             nid = futures[future]
             try:
@@ -779,6 +789,7 @@ def auto_switch_node(attempt: int = 0) -> None:
         candidates = [
             n for n in nodes 
             if n.get("probe_status") == "available" 
+            and is_residential_node(n)
             and not n.get("active")
         ]
         candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
@@ -978,14 +989,14 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         
             write_json(NODES_FILE, merged)
 
-        # Test the first 10 non-active nodes from the new list
+        # Test all non-active candidates, then only residential IPs remain available.
         with lock:
             current_nodes = read_json(NODES_FILE, [])
-            to_test = [n for n in current_nodes if not n.get("active")][:10]
+            to_test = [n for n in current_nodes if not n.get("active")]
             to_test_ids = [n["id"] for n in to_test]
             
-        print(f"[维护线程] 正在检测新获取列表的前 10 个节点: {to_test_ids}", flush=True)
-        set_state(is_connecting=True, last_check_message="正在并发检测筛选可用节点，这可能需要 5-30 秒...")
+        print(f"[维护线程] 正在检测全部 {len(to_test_ids)} 个候选节点并筛选住宅 IP...", flush=True)
+        set_state(is_connecting=True, last_check_message=f"正在并发检测全部 {len(to_test_ids)} 个候选节点并筛选住宅 IP，这可能需要较长时间...")
         test_multiple_nodes(to_test_ids)
         
         is_connecting = False
@@ -993,12 +1004,12 @@ def maintain_valid_nodes(force: bool = False) -> str:
         with lock:
             merged = read_json(NODES_FILE, [])
             if not active_openvpn_running():
-                available_candidates = [n for n in merged if n.get("probe_status") == "available"]
+                available_candidates = [n for n in merged if n.get("probe_status") == "available" and is_residential_node(n)]
                 if available_candidates:
                     auto_switch_node()
 
-        valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
-        message = f"Fetched {len(candidates)} nodes. Tested first 10 nodes."
+        valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available" and is_residential_node(n)])
+        message = f"Fetched {len(candidates)} nodes. Tested {len(to_test_ids)} nodes. Residential available: {valid_nodes_count}."
         set_state(
             last_check_at=time.time(),
             last_check_message=message,
