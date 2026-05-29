@@ -56,6 +56,16 @@ else
     if [ -d "${INSTALL_DIR}" ]; then
         echo -e "  -> 目录 ${INSTALL_DIR} 已存在，正在更新并强制覆盖本地源码..."
         cd "${INSTALL_DIR}"
+        # Ensure remote points to the correct repository
+        if git remote get-url origin >/dev/null 2>&1; then
+            CURRENT_REMOTE=$(git remote get-url origin)
+            if [ "${CURRENT_REMOTE}" != "${GITHUB_URL}" ]; then
+                echo -e "  -> 检测到远程仓库地址不一致，正在更新为 ${GITHUB_URL} ..."
+                git remote set-url origin "${GITHUB_URL}"
+            fi
+        else
+            git remote add origin "${GITHUB_URL}" 2>/dev/null || git remote set-url origin "${GITHUB_URL}"
+        fi
         git fetch --all || true
         BRANCH="main"
         if git rev-parse --verify origin/main >/dev/null 2>&1; then
