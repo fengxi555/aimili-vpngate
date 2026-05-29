@@ -2519,14 +2519,16 @@ function toggleLatencySort() {
 function getFilteredAndSortedNodes() {
   let filtered = getFilteredNodes();
   if (latencySortState === 1) {
-    // Ascending: low latency first, nodes without latency go to the end
+    // Ascending latency sort only shows available/current nodes.
+    filtered = filtered.filter(n => n.probe_status === "available" || n.active);
     filtered.sort((a, b) => {
       const aMs = a.latency_ms || Infinity;
       const bMs = b.latency_ms || Infinity;
       return aMs - bMs;
     });
   } else if (latencySortState === 2) {
-    // Descending: high latency first, nodes without latency go to the end
+    // Descending latency sort only shows available/current nodes.
+    filtered = filtered.filter(n => n.probe_status === "available" || n.active);
     filtered.sort((a, b) => {
       const aMs = a.latency_ms || 0;
       const bMs = b.latency_ms || 0;
@@ -2869,7 +2871,7 @@ async function disconnectNode(){
 // Batch test button implementation - tests ALL filtered nodes in batches
 let batchTestAbort = false;
 $("btn_batch_test").onclick = async () => {
-  const allFiltered = getFilteredAndSortedNodes();
+  const allFiltered = getFilteredNodes();
   if (allFiltered.length === 0) {
     alert("没有可供测试的备选节点");
     return;
