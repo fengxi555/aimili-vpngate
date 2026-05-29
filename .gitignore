@@ -1,0 +1,37 @@
+# Nuitka compiler intermediate folders
+vpngate_manager.build/
+vpngate_manager.dist/
+*.build/
+*.dist/
+aimilivpn
+
+# Debian building artifacts
+*.deb
+aimilivpn_*
+
+# Python caches and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local runtime data folders
+vpngate_data/
+logs/
+*.log
+*.tmp
+
+# IDE settings
+.vscode/
+.idea/
+.gemini/
+.cursorrules
+
+
+# Scratch and test files containing credentials
+scratch/
+*连接配置*
+
+# Local analysis and doc files
+AimiliVPN_Analysis_ZH.md
+
